@@ -16,7 +16,7 @@ Usage:
 
 Expected output:
     ./test_lora_outputs/
-    ├── 1_without_lora.mp4          # Baseline
+    ├── 1_without_lora.mp4          # Baseline (no LoRA)
     ├── 2_with_lora.mp4             # LoRA effect applied
     └── 3_unmerge_remerge.mp4       # After unmerge then remerge
 
@@ -58,14 +58,15 @@ OUTPUT_DIR = Path("./test_lora_outputs")
 # ============================================================================
 
 
-def get_sampling_params_kwargs(output_file_name: str) -> dict:
-    """Create consistent sampling parameters dict for all generations."""
+def get_sampling_params_kwargs(output_file_name: str, seed: int = 1024) -> dict:
+    """Create sampling parameters dict for generations."""
     return {
         "prompt": PROMPT,
         "width": WIDTH,
         "height": HEIGHT,
         "num_inference_steps": NUM_INFERENCE_STEPS,
         "guidance_scale": 5.0,
+        "seed": seed,
         "save_output": True,
         "output_path": str(OUTPUT_DIR),
         "output_file_name": output_file_name,
@@ -127,7 +128,7 @@ def test2_with_lora() -> None:
 
     print(f"LoRA: {LORA_PATH}")
     print(f"Generating with prompt: {PROMPT}")
-    params = get_sampling_params_kwargs("2_with_lora")
+    params = get_sampling_params_kwargs("2_with_lora", seed=2048)
     generator.generate(sampling_params_kwargs=params)
 
     output_path = OUTPUT_DIR / "2_with_lora.mp4"
@@ -220,7 +221,9 @@ def run_all_tests() -> None:
 
     print("\nExpected Results:")
     print("  - Video 1 should look DIFFERENT from Video 2 and 3 (no LoRA vs with LoRA)")
-    print("  - Video 2 and 3 should look SIMILAR (both with LoRA effect)")
+    print(
+        "  - Video 2 and 3 should both show LoRA effect (but different due to different seeds)"
+    )
 
     print("\nVerified lora_pipeline.py functions for transformer_2:")
     print("  ✅ lora_layers_transformer_2 (class attribute)")
