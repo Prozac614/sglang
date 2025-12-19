@@ -38,16 +38,24 @@ logger = init_logger(__name__)
 STARTUP_OVERHEAD_SEC = 300
 
 # Suite configurations: maps suite name to (test_file, case_import_path)
+# - test_file: main parametrized test file
+# - cases_module/cases_attr: where to load DiffusionTestCase definitions
+# - extra_files: additional standalone test files (not parametrized)
 SUITE_CONFIG = {
     "1-gpu": {
         "test_file": "test_server.py",
         "cases_module": "sglang.multimodal_gen.test.server.testcase_configs",
         "cases_attr": ["ONE_GPU_CASES"],
+        "extra_files": [
+            # Standalone LoRA format adapter tests (~3min)
+            ("test_lora_format_adapter.py", 180),
+        ],
     },
     "2-gpu": {
         "test_file": "test_server_2_gpu.py",
         "cases_module": "sglang.multimodal_gen.test.server.testcase_configs",
         "cases_attr": ["TWO_GPU_CASES"],
+        "extra_files": [],
     },
 }
 
@@ -94,6 +102,19 @@ def load_test_cases(suite: str) -> List[TestCase]:
                 id=case_id,
                 estimated_time=est_time,
                 test_file=config["test_file"],
+            )
+        )
+
+    # Add extra standalone test files (not parametrized by DiffusionTestCase)
+    # These are treated as single test cases with their own estimated time
+    for extra_file, est_time in config.get("extra_files", []):
+        # Use filename (without .py) as the case ID
+        case_id = extra_file.replace(".py", "")
+        test_cases.append(
+            TestCase(
+                id=case_id,
+                estimated_time=est_time,
+                test_file=extra_file,
             )
         )
 
@@ -144,33 +165,34 @@ def parse_args():
 
 
 def run_pytest_with_filter(test_file: Path, case_ids: List[str]) -> int:
-    """Run pytest with -k filter for specific test cases."""
-    if not case_ids:
-        print("No test cases to run.")
-        return 0
+    """Run pytest with -k filter for specific test cases.
 
-    # Build -k filter expression: "case1 or case2 or case3"
-    filter_expr = " or ".join(case_ids)
-
-    cmd = [
+    If case_ids is empty, runs all tests in the file without filtering.
+    """
+    # Base pytest options (before test file)
+    base_cmd = [
         sys.executable,
         "-m",
         "pytest",
         "-s",
         "-v",
         "--log-cli-level=INFO",
-        str(test_file),
-        "-k",
-        filter_expr,
     ]
+
+    # Test file and optional -k filter (after base options)
+    file_and_filter = [str(test_file)]
+    if case_ids:
+        filter_expr = " or ".join(case_ids)
+        file_and_filter.extend(["-k", filter_expr])
 
     max_retries = 4
     returncode = 1
 
     for i in range(max_retries + 1):
-        run_cmd = list(cmd)
+        run_cmd = list(base_cmd)
         if i > 0:
-            run_cmd.insert(-2, "--last-failed")  # Insert before test file
+            run_cmd.append("--last-failed")
+        run_cmd.extend(file_and_filter)
 
         if i > 0:
             logger.info(
@@ -256,17 +278,41 @@ def main():
     test_root = Path(__file__).resolve().parent
     target_dir = test_root / args.base_dir
 
-    # Use the test file from the first case (all cases in a suite share the same file)
-    test_file = target_dir / my_cases[0].test_file
+    # Group cases by test file
+    config = SUITE_CONFIG[args.suite]
+    main_test_file = config["test_file"]
 
-    if not test_file.exists():
-        print(f"Error: Test file {test_file} does not exist.")
-        return 1
+    main_file_cases = [c for c in my_cases if c.test_file == main_test_file]
+    extra_file_cases = [c for c in my_cases if c.test_file != main_test_file]
 
-    # Run pytest with case filter
-    case_ids = [c.id for c in my_cases]
-    exit_code = run_pytest_with_filter(test_file, case_ids)
-    return exit_code
+    overall_exit_code = 0
+
+    # Run main test file with -k filter (if any cases)
+    if main_file_cases:
+        test_file = target_dir / main_test_file
+        if not test_file.exists():
+            print(f"Error: Test file {test_file} does not exist.")
+            return 1
+
+        case_ids = [c.id for c in main_file_cases]
+        exit_code = run_pytest_with_filter(test_file, case_ids)
+        if exit_code != 0:
+            overall_exit_code = exit_code
+
+    # Run extra standalone test files (without -k filter)
+    for case in extra_file_cases:
+        test_file = target_dir / case.test_file
+        if not test_file.exists():
+            print(f"Warning: Extra test file {test_file} does not exist. Skipping.")
+            continue
+
+        print(f"\n=== Running standalone test: {case.test_file} ===")
+        # Run the entire file without -k filter
+        exit_code = run_pytest_with_filter(test_file, [])
+        if exit_code != 0:
+            overall_exit_code = exit_code
+
+    return overall_exit_code
 
 
 if __name__ == "__main__":
