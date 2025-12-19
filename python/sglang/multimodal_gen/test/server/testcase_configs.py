@@ -399,48 +399,12 @@ ONE_GPU_CASES_B: list[DiffusionTestCase] = [
     ),
 ]
 
+# Combined 1-GPU cases for auto-balanced partitioning
+ONE_GPU_CASES = ONE_GPU_CASES_A + ONE_GPU_CASES_B
+
+# 2-GPU test cases split into 4 groups for balanced CI execution (~20min each)
+# Group A: Single largest test case (~13.6min inference + overhead)
 TWO_GPU_CASES_A = [
-    DiffusionTestCase(
-        "wan2_2_i2v_a14b_2gpu",
-        DiffusionServerArgs(
-            model_path="Wan-AI/Wan2.2-I2V-A14B-Diffusers",
-            modality="video",
-            warmup_text=0,
-            warmup_edit=0,
-            custom_validator="video",
-        ),
-        TI2V_sampling_params,
-    ),
-    DiffusionTestCase(
-        "wan2_2_t2v_a14b_2gpu",
-        DiffusionServerArgs(
-            model_path="Wan-AI/Wan2.2-T2V-A14B-Diffusers",
-            modality="video",
-            warmup_text=0,
-            warmup_edit=0,
-            custom_validator="video",
-            num_gpus=2,
-        ),
-        DiffusionSamplingParams(
-            prompt=T2V_PROMPT,
-        ),
-    ),
-    # LoRA test case for transformer_2 support
-    DiffusionTestCase(
-        "wan2_2_t2v_a14b_lora_2gpu",
-        DiffusionServerArgs(
-            model_path="Wan-AI/Wan2.2-T2V-A14B-Diffusers",
-            modality="video",
-            warmup_text=0,
-            warmup_edit=0,
-            custom_validator="video",
-            num_gpus=2,
-            lora_path="Cseti/wan2.2-14B-Arcane_Jinx-lora-v1",
-        ),
-        DiffusionSamplingParams(
-            prompt="Nfj1nx with blue hair, a woman walking in a cyberpunk city at night",
-        ),
-    ),
     DiffusionTestCase(
         "wan2_1_t2v_14b_2gpu",
         DiffusionServerArgs(
@@ -458,33 +422,8 @@ TWO_GPU_CASES_A = [
     ),
 ]
 
+# Group B: wan2_1_i2v_14b_720P (~7.1min) + flux_image_t2i (~0.15min)
 TWO_GPU_CASES_B = [
-    DiffusionTestCase(
-        "wan2_1_i2v_14b_480P_2gpu",
-        DiffusionServerArgs(
-            model_path="Wan-AI/Wan2.1-I2V-14B-480P-Diffusers",
-            warmup_text=0,
-            warmup_edit=0,
-            modality="video",
-            custom_validator="video",
-            num_gpus=2,
-        ),
-        TI2V_sampling_params,
-    ),
-    # I2V LoRA test case
-    DiffusionTestCase(
-        "wan2_1_i2v_14b_lora_2gpu",
-        DiffusionServerArgs(
-            model_path="Wan-AI/Wan2.1-I2V-14B-720P-Diffusers",
-            modality="video",
-            warmup_text=0,
-            warmup_edit=0,
-            custom_validator="video",
-            num_gpus=2,
-            lora_path="starsfriday/Wan2.1-Divine-Power-LoRA",
-        ),
-        TI2V_sampling_params,
-    ),
     DiffusionTestCase(
         "wan2_1_i2v_14b_720P_2gpu",
         DiffusionServerArgs(
@@ -492,6 +431,32 @@ TWO_GPU_CASES_B = [
             modality="video",
             warmup_text=0,
             warmup_edit=0,
+            custom_validator="video",
+            num_gpus=2,
+        ),
+        TI2V_sampling_params,
+    ),
+    DiffusionTestCase(
+        "flux_image_t2i_2_gpus",
+        DiffusionServerArgs(
+            model_path="black-forest-labs/FLUX.1-dev",
+            modality="image",
+            warmup_text=1,
+            warmup_edit=0,
+        ),
+        T2I_sampling_params,
+    ),
+]
+
+# Group C: wan2_1_i2v_14b_480P (~7.1min) + qwen_image_t2i (~0.4min)
+TWO_GPU_CASES_C = [
+    DiffusionTestCase(
+        "wan2_1_i2v_14b_480P_2gpu",
+        DiffusionServerArgs(
+            model_path="Wan-AI/Wan2.1-I2V-14B-480P-Diffusers",
+            warmup_text=0,
+            warmup_edit=0,
+            modality="video",
             custom_validator="video",
             num_gpus=2,
         ),
@@ -511,17 +476,71 @@ TWO_GPU_CASES_B = [
         ),
         T2I_sampling_params,
     ),
+]
+
+# Group D: 4 smaller cases (~10.7min total)
+TWO_GPU_CASES_D = [
+    # I2V LoRA test case (~3.4min)
     DiffusionTestCase(
-        "flux_image_t2i_2_gpus",
+        "wan2_1_i2v_14b_lora_2gpu",
         DiffusionServerArgs(
-            model_path="black-forest-labs/FLUX.1-dev",
-            modality="image",
-            warmup_text=1,
+            model_path="Wan-AI/Wan2.1-I2V-14B-720P-Diffusers",
+            modality="video",
+            warmup_text=0,
             warmup_edit=0,
+            custom_validator="video",
+            num_gpus=2,
+            lora_path="starsfriday/Wan2.1-Divine-Power-LoRA",
         ),
-        T2I_sampling_params,
+        TI2V_sampling_params,
+    ),
+    # LoRA test case for transformer_2 support (~2.7min)
+    DiffusionTestCase(
+        "wan2_2_t2v_a14b_lora_2gpu",
+        DiffusionServerArgs(
+            model_path="Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+            modality="video",
+            warmup_text=0,
+            warmup_edit=0,
+            custom_validator="video",
+            num_gpus=2,
+            lora_path="Cseti/wan2.2-14B-Arcane_Jinx-lora-v1",
+        ),
+        DiffusionSamplingParams(
+            prompt="Nfj1nx with blue hair, a woman walking in a cyberpunk city at night",
+        ),
+    ),
+    # wan2_2_t2v_a14b (~2.5min)
+    DiffusionTestCase(
+        "wan2_2_t2v_a14b_2gpu",
+        DiffusionServerArgs(
+            model_path="Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+            modality="video",
+            warmup_text=0,
+            warmup_edit=0,
+            custom_validator="video",
+            num_gpus=2,
+        ),
+        DiffusionSamplingParams(
+            prompt=T2V_PROMPT,
+        ),
+    ),
+    # wan2_2_i2v_a14b (~2.1min)
+    DiffusionTestCase(
+        "wan2_2_i2v_a14b_2gpu",
+        DiffusionServerArgs(
+            model_path="Wan-AI/Wan2.2-I2V-A14B-Diffusers",
+            modality="video",
+            warmup_text=0,
+            warmup_edit=0,
+            custom_validator="video",
+        ),
+        TI2V_sampling_params,
     ),
 ]
+
+# Combined 2-GPU cases for auto-balanced partitioning
+TWO_GPU_CASES = TWO_GPU_CASES_A + TWO_GPU_CASES_B + TWO_GPU_CASES_C + TWO_GPU_CASES_D
 
 # Load global configuration
 BASELINE_CONFIG = BaselineConfig.load(Path(__file__).with_name("perf_baselines.json"))

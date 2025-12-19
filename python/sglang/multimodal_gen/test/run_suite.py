@@ -1,45 +1,114 @@
 """
-Test runner for multimodal_gen that manages test suites and parallel execution.
+Test runner for multimodal_gen with auto load-balanced partitioning at test case level.
+
+Features:
+- Automatically loads test case estimated times from perf_baselines.json
+- Uses LPT (Longest Processing Time) algorithm for balanced partitioning
+- Supports computing optimal partition count to meet time constraints
+- Filters test cases using pytest -k for fine-grained control
 
 Usage:
-    python3 run_suite.py --suite <suite_name> --partition-id <id> --total-partitions <num>
+    # Run with specific partition
+    python3 run_suite.py --suite 2-gpu --partition-id 0 --total-partitions 5
 
-Example:
-    python3 run_suite.py --suite 1-gpu --partition-id 0 --total-partitions 2
+    # Compute optimal partition count (for CI dynamic matrix)
+    python3 run_suite.py --suite 2-gpu --compute-partitions --max-time 1200
+
+    # Run all cases without partitioning
+    python3 run_suite.py --suite 2-gpu
 """
 
 import argparse
-import os
+import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import List
 
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
+from sglang.test.ci.ci_utils import (
+    TestCase,
+    auto_partition_by_time,
+    compute_optimal_partitions,
+)
 
 logger = init_logger(__name__)
 
-SUITES = {
-    "1-gpu": [
-        "test_server_a.py",
-        "test_server_b.py",
-        "test_lora_format_adapter.py",
-        # add new 1-gpu test files here
-    ],
-    "2-gpu": [
-        "test_server_2_gpu_a.py",
-        "test_server_2_gpu_b.py",
-        # add new 2-gpu test files here
-    ],
+# Startup overhead per test case (seconds): server startup, model loading, warmup
+STARTUP_OVERHEAD_SEC = 300
+
+# Suite configurations: maps suite name to (test_file, case_import_path)
+SUITE_CONFIG = {
+    "1-gpu": {
+        "test_file": "test_server.py",
+        "cases_module": "sglang.multimodal_gen.test.server.testcase_configs",
+        "cases_attr": ["ONE_GPU_CASES"],
+    },
+    "2-gpu": {
+        "test_file": "test_server_2_gpu.py",
+        "cases_module": "sglang.multimodal_gen.test.server.testcase_configs",
+        "cases_attr": ["TWO_GPU_CASES"],
+    },
 }
 
 
+def load_baseline_times() -> dict:
+    """Load expected_e2e_ms from perf_baselines.json."""
+    baseline_path = Path(__file__).parent / "server" / "perf_baselines.json"
+    with open(baseline_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return {
+        case_id: scenario.get("expected_e2e_ms", 300000)
+        for case_id, scenario in data.get("scenarios", {}).items()
+    }
+
+
+def load_test_cases(suite: str) -> List[TestCase]:
+    """Load test cases for a suite and attach estimated times from baseline."""
+    import importlib
+
+    config = SUITE_CONFIG[suite]
+    baseline_times = load_baseline_times()
+
+    # Dynamically import the cases
+    module = importlib.import_module(config["cases_module"])
+    all_cases = []
+    for attr in config["cases_attr"]:
+        cases = getattr(module, attr, [])
+        all_cases.extend(cases)
+
+    # Convert to TestCase objects with estimated times
+    test_cases = []
+    for case in all_cases:
+        case_id = case.id
+        if case_id in baseline_times:
+            # Convert ms to seconds + startup overhead
+            est_time = baseline_times[case_id] / 1000 + STARTUP_OVERHEAD_SEC
+        else:
+            # Default: 5 minutes inference + startup overhead
+            est_time = 300 + STARTUP_OVERHEAD_SEC
+            logger.warning(f"Case {case_id} not found in baseline, using default time")
+
+        test_cases.append(
+            TestCase(
+                id=case_id,
+                estimated_time=est_time,
+                test_file=config["test_file"],
+            )
+        )
+
+    return test_cases
+
+
 def parse_args():
-    parser = argparse.ArgumentParser(description="Run multimodal_gen test suite")
+    parser = argparse.ArgumentParser(
+        description="Run multimodal_gen test suite with auto load-balanced partitioning"
+    )
     parser.add_argument(
         "--suite",
         type=str,
         required=True,
-        choices=list(SUITES.keys()),
+        choices=list(SUITE_CONFIG.keys()),
         help="The test suite to run (e.g., 1-gpu, 2-gpu)",
     )
     parser.add_argument(
@@ -55,6 +124,17 @@ def parse_args():
         help="Total number of partitions",
     )
     parser.add_argument(
+        "--compute-partitions",
+        action="store_true",
+        help="Compute and print optimal partition count (for CI dynamic matrix)",
+    )
+    parser.add_argument(
+        "--max-time",
+        type=int,
+        default=1200,
+        help="Maximum time per partition in seconds (default: 1200 = 20min)",
+    )
+    parser.add_argument(
         "--base-dir",
         type=str,
         default="server",
@@ -63,30 +143,44 @@ def parse_args():
     return parser.parse_args()
 
 
-def run_pytest(files):
-    if not files:
-        print("No files to run.")
+def run_pytest_with_filter(test_file: Path, case_ids: List[str]) -> int:
+    """Run pytest with -k filter for specific test cases."""
+    if not case_ids:
+        print("No test cases to run.")
         return 0
 
-    base_cmd = [sys.executable, "-m", "pytest", "-s", "-v", "--log-cli-level=INFO"]
+    # Build -k filter expression: "case1 or case2 or case3"
+    filter_expr = " or ".join(case_ids)
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-s",
+        "-v",
+        "--log-cli-level=INFO",
+        str(test_file),
+        "-k",
+        filter_expr,
+    ]
 
     max_retries = 4
-    # retry if the perf assertion failed, for {max_retries} times
+    returncode = 1
+
     for i in range(max_retries + 1):
-        cmd = list(base_cmd)
+        run_cmd = list(cmd)
         if i > 0:
-            cmd.append("--last-failed")
-        cmd.extend(files)
+            run_cmd.insert(-2, "--last-failed")  # Insert before test file
 
         if i > 0:
             logger.info(
                 f"Performance assertion failed. Retrying ({i}/{max_retries}) with --last-failed..."
             )
 
-        logger.info(f"Running command: {' '.join(cmd)}")
+        logger.info(f"Running command: {' '.join(run_cmd)}")
 
         process = subprocess.Popen(
-            cmd,
+            run_cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -107,71 +201,73 @@ def run_pytest(files):
         if returncode == 0:
             return 0
 
-        # check if the failure is due to an assertion in test_server_utils.py
+        # Check if the failure is due to a performance assertion
         full_output = "".join(output_lines)
         is_perf_assertion = (
             "multimodal_gen/test/server/test_server_utils.py" in full_output
             and "AssertionError" in full_output
         )
-
         is_flaky_ci_assertion = "SafetensorError" in full_output
 
         if not (is_perf_assertion or is_flaky_ci_assertion):
             return returncode
 
-    logger.info(f"Max retry exceeded")
+    logger.info("Max retry exceeded")
     return returncode
 
 
 def main():
     args = parse_args()
 
-    # 1. resolve base path
-    current_file_path = Path(__file__).resolve()
-    test_root_dir = current_file_path.parent
-    target_dir = test_root_dir / args.base_dir
+    # Load all test cases for the suite
+    all_cases = load_test_cases(args.suite)
 
-    if not target_dir.exists():
-        print(f"Error: Target directory {target_dir} does not exist.")
-        sys.exit(1)
+    # If computing partitions, just output the count and exit
+    if args.compute_partitions:
+        optimal_count = compute_optimal_partitions(all_cases, args.max_time)
+        # Output as JSON array for GitHub Actions matrix
+        partition_list = list(range(optimal_count))
+        print(json.dumps(partition_list))
+        return 0
 
-    # 2. get files from suite
-    suite_files_rel = SUITES[args.suite]
+    # Apply LPT partitioning at test case level
+    if args.total_partitions > 1:
+        my_cases = auto_partition_by_time(
+            all_cases, args.partition_id, args.total_partitions
+        )
+    else:
+        my_cases = all_cases
 
-    suite_files_abs = []
-    for f_rel in suite_files_rel:
-        f_abs = target_dir / f_rel
-        if not f_abs.exists():
-            print(f"Warning: Test file {f_rel} not found in {target_dir}. Skipping.")
-            continue
-        suite_files_abs.append(str(f_abs))
-
-    if not suite_files_abs:
-        print(f"No valid test files found for suite '{args.suite}'.")
-        sys.exit(0)
-
-    # 3. partitioning
-    my_files = [
-        f
-        for i, f in enumerate(suite_files_abs)
-        if i % args.total_partitions == args.partition_id
-    ]
-
+    # Print partition info
+    total_est_time = sum(c.estimated_time for c in my_cases)
     print(
         f"Suite: {args.suite} | Partition: {args.partition_id}/{args.total_partitions}"
     )
-    print(f"Selected {len(my_files)} files:")
-    for f in my_files:
-        print(f"  - {os.path.basename(f)}")
+    print(f"Estimated time: {total_est_time:.0f}s ({total_est_time/60:.1f}min)")
+    print(f"Test cases ({len(my_cases)}):")
+    for c in my_cases:
+        print(f"  - {c.id} ({c.estimated_time:.0f}s / {c.estimated_time/60:.1f}min)")
 
-    if not my_files:
-        print("No files assigned to this partition. Exiting success.")
-        sys.exit(0)
+    if not my_cases:
+        print("No test cases assigned to this partition. Exiting success.")
+        return 0
 
-    # 4. execute
-    exit_code = run_pytest(my_files)
-    sys.exit(exit_code)
+    # Resolve test file path
+    test_root = Path(__file__).resolve().parent
+    target_dir = test_root / args.base_dir
+
+    # Use the test file from the first case (all cases in a suite share the same file)
+    test_file = target_dir / my_cases[0].test_file
+
+    if not test_file.exists():
+        print(f"Error: Test file {test_file} does not exist.")
+        return 1
+
+    # Run pytest with case filter
+    case_ids = [c.id for c in my_cases]
+    exit_code = run_pytest_with_filter(test_file, case_ids)
+    return exit_code
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

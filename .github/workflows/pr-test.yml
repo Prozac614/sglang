@@ -448,8 +448,57 @@ jobs:
           cd test/
           python3 run_suite.py --hw cuda --suite stage-b-test-small-1-gpu --auto-partition-id ${{ matrix.partition }} --auto-partition-size 2
 
+  # Compute optimal partition count for 1-GPU tests based on test case times
+  compute-multimodal-1gpu-partitions:
+    needs: [check-changes]
+    if: |
+      always() &&
+      (
+        (inputs.target_stage == 'multimodal-gen-test-1-gpu') ||
+        (
+          !inputs.target_stage &&
+          (github.event_name == 'schedule' || (!failure() && !cancelled())) &&
+          needs.check-changes.outputs.multimodal_gen == 'true'
+        )
+      )
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.compute.outputs.matrix }}
+      count: ${{ steps.compute.outputs.count }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Compute optimal partitions
+        id: compute
+        run: |
+          cd python
+          # Install minimal dependencies for partition computation
+          pip install -e ".[dev]" --no-deps 2>/dev/null || true
+          # Compute partitions with max 20min per partition
+          result=$(python3 -c "
+          import sys
+          sys.path.insert(0, '.')
+          from sglang.multimodal_gen.test.run_suite import load_test_cases
+          from sglang.test.ci.ci_utils import compute_optimal_partitions
+          import json
+          cases = load_test_cases('1-gpu')
+          n = compute_optimal_partitions(cases, max_time_sec=1200)
+          print(json.dumps(list(range(n))))
+          ")
+          echo "matrix=$result" >> $GITHUB_OUTPUT
+          # Also output the count for use in total-partitions
+          count=$(echo "$result" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")
+          echo "count=$count" >> $GITHUB_OUTPUT
+          echo "Computed partitions: $result (count: $count)"
+
   multimodal-gen-test-1-gpu:
-    needs: [check-changes, call-gate, sgl-kernel-build-wheels]
+    needs: [check-changes, call-gate, sgl-kernel-build-wheels, compute-multimodal-1gpu-partitions]
     if: |
       always() &&
       (
@@ -464,7 +513,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        part: [0, 1]
+        part: ${{ fromJson(needs.compute-multimodal-1gpu-partitions.outputs.matrix) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -480,6 +529,7 @@ jobs:
       - name: Install dependencies
         run: |
           CUSTOM_BUILD_SGL_KERNEL=${{needs.check-changes.outputs.sgl_kernel}} bash scripts/ci/ci_install_dependency.sh diffusion
+
       - name: Run diffusion server tests
         timeout-minutes: 60
         run: |
@@ -487,11 +537,60 @@ jobs:
           python3 sglang/multimodal_gen/test/run_suite.py \
             --suite 1-gpu \
             --partition-id ${{ matrix.part }} \
-            --total-partitions 2
+            --total-partitions ${{ needs.compute-multimodal-1gpu-partitions.outputs.count }}
 
+
+  # Compute optimal partition count for 2-GPU tests based on test case times
+  compute-multimodal-2gpu-partitions:
+    needs: [check-changes]
+    if: |
+      always() &&
+      (
+        (inputs.target_stage == 'multimodal-gen-test-2-gpu') ||
+        (
+          !inputs.target_stage &&
+          (github.event_name == 'schedule' || (!failure() && !cancelled())) &&
+          needs.check-changes.outputs.multimodal_gen == 'true'
+        )
+      )
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.compute.outputs.matrix }}
+      count: ${{ steps.compute.outputs.count }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Compute optimal partitions
+        id: compute
+        run: |
+          cd python
+          # Install minimal dependencies for partition computation
+          pip install -e ".[dev]" --no-deps 2>/dev/null || true
+          # Compute partitions with max 20min per partition
+          result=$(python3 -c "
+          import sys
+          sys.path.insert(0, '.')
+          from sglang.multimodal_gen.test.run_suite import load_test_cases
+          from sglang.test.ci.ci_utils import compute_optimal_partitions
+          import json
+          cases = load_test_cases('2-gpu')
+          n = compute_optimal_partitions(cases, max_time_sec=1200)
+          print(json.dumps(list(range(n))))
+          ")
+          echo "matrix=$result" >> $GITHUB_OUTPUT
+          # Also output the count for use in total-partitions
+          count=$(echo "$result" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")
+          echo "count=$count" >> $GITHUB_OUTPUT
+          echo "Computed partitions: $result (count: $count)"
 
   multimodal-gen-test-2-gpu:
-    needs: [check-changes, call-gate, sgl-kernel-build-wheels]
+    needs: [check-changes, call-gate, sgl-kernel-build-wheels, compute-multimodal-2gpu-partitions]
     if: |
       always() &&
       (
@@ -506,7 +605,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        part: [0, 1]
+        part: ${{ fromJson(needs.compute-multimodal-2gpu-partitions.outputs.matrix) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -530,7 +629,7 @@ jobs:
           python3 sglang/multimodal_gen/test/run_suite.py \
             --suite 2-gpu \
             --partition-id ${{ matrix.part }} \
-            --total-partitions 2
+            --total-partitions ${{ needs.compute-multimodal-2gpu-partitions.outputs.count }}
 
   quantization-test:
       needs: [check-changes, call-gate, stage-a-test-1]
