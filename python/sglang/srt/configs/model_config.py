@@ -466,7 +466,10 @@ class ModelConfig:
         self.num_nextn_predict_layers = getattr(
             self.hf_text_config, "num_nextn_predict_layers", None
         )
-        self.vocab_size = self.hf_text_config.vocab_size
+        # Use output_vocab_size if available (for models with asymmetric vocab like GLM-Image)
+        self.vocab_size = getattr(
+            self.hf_text_config, "output_vocab_size", self.hf_text_config.vocab_size
+        )
 
     def get_total_num_attention_heads(self) -> int:
         return self.num_attention_heads
@@ -1086,7 +1089,7 @@ multimodal_model_archs = [
     "JetVLMForConditionalGeneration",
     "PaddleOCRVLForConditionalGeneration",
     "MiDashengLMModel",
-    # "GlmImageForConditionalGen·eration",
+    "GlmImageForConditionalGeneration",
 ]
 
 if external_mm_model_arch := envs.SGLANG_EXTERNAL_MM_MODEL_ARCH.get():
