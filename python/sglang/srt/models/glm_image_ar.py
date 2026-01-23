@@ -797,10 +797,7 @@ class GlmImageForConditionalGeneration(nn.Module):
 
         # MROPE enabled check
         rope_scaling = getattr(config.text_config, "rope_scaling", {}) or {}
-        rope_parameters = getattr(config.text_config, "rope_parameters", {}) or {}
-        self.is_mrope_enabled = (
-            "mrope_section" in rope_scaling or "mrope_section" in rope_parameters
-        )
+        self.is_mrope_enabled = "mrope_section" in rope_scaling
 
     def get_input_embeddings(self):
         return self.model.language_model.embed_tokens

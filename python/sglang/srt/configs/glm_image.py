@@ -251,6 +251,11 @@ class GlmImageTextConfig(PretrainedConfig):
         # super().__init__(ignore_keys_at_rope_validation={"mrope_section"}, **kwargs)
         super().__init__(**kwargs)
 
+    @property
+    def rope_scaling(self):
+        """Alias for rope_parameters to maintain compatibility with mrope detection."""
+        return self.rope_parameters
+
 
 class GlmImageConfig(PretrainedConfig):
     r"""
