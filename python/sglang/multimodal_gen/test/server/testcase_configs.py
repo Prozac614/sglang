@@ -570,7 +570,6 @@ ONE_GPU_CASES_B: list[DiffusionTestCase] = [
         DiffusionServerArgs(
             model_path="tencent/Hunyuan3D-2",
             modality="3d",
-            warmup=0,
             custom_validator="mesh",
         ),
         HUNYUAN3D_SHAPE_sampling_params,
