@@ -98,7 +98,7 @@ diffusion_hip = [
   "runai_model_streamer>=0.15.5",
   "cache-dit==1.1.8",
   "addict",
-  "scikit-image",
+  "scikit-image==0.26.0",
   "trimesh>=4.0.0",
   "xatlas",
 ]
@@ -131,7 +131,7 @@ diffusion_musa = [
   "runai_model_streamer>=0.15.5",
   "cache-dit==1.1.8",
   "addict",
-  "scikit-image",
+  "scikit-image==0.26.0",
   "trimesh>=4.0.0",
   "xatlas",
 ]
