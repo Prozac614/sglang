@@ -665,6 +665,7 @@ Consider updating perf_baselines.json with the snippets below:
         modality_to_valid_task_types = {
             "image": {"T2I", "I2I", "TI2I"},
             "video": {"T2V", "I2V", "TI2V"},
+            "3d": {"I2M"},
         }
         valid_task_types = modality_to_valid_task_types.get(
             case.server_args.modality, set()
@@ -766,24 +767,6 @@ Consider updating perf_baselines.json with the snippets below:
             sampling_params=case.sampling_params,
         )
 
-        # Special handling for 3D mesh generation
-        if case.server_args.modality == "3d":
-            client = self._client(diffusion_server)
-            mesh_path = generate_fn(case.id, client)
-
-            # Validate mesh using MeshValidator
-            validator_class = VALIDATOR_REGISTRY.get("mesh")
-            validator = validator_class()
-            results = validator.validate(mesh_path)
-
-            if not results["all_passed"]:
-                logger.error(f"Mesh validation failed for {case.id}: {results}")
-                pytest.fail(f"Mesh validation failed: {results}")
-
-            logger.info(f"Mesh validation passed for {case.id}: {results}")
-
-            return
-
         perf_record = self.run_and_collect(
             diffusion_server,
             case.id,
@@ -791,6 +774,17 @@ Consider updating perf_baselines.json with the snippets below:
         )
 
         self._validate_and_record(case, perf_record)
+
+        # Mesh correctness check (Chamfer Distance) for 3D models
+        if case.server_args.custom_validator == "mesh":
+            from sglang.multimodal_gen.test.server.test_server_utils import (
+                MESH_OUTPUT_PATHS,
+                validate_mesh_correctness,
+            )
+
+            mesh_path = MESH_OUTPUT_PATHS.pop(case.id, None)
+            if mesh_path:
+                validate_mesh_correctness(mesh_path)
 
         # Test /v1/models endpoint for router compatibility
         self._test_v1_models_endpoint(diffusion_server, case)

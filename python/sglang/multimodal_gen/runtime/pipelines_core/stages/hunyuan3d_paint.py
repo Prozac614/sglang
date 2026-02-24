@@ -1025,7 +1025,7 @@ class Hunyuan3DPaintPostprocessStage(PipelineStage):
         except Exception as e:
             logger.error(f"Mesh export failed: {e}")
 
-        return OutputBatch(output_file_paths=[return_path], timings=batch.timings)
+        return OutputBatch(output_file_paths=[return_path], metrics=batch.metrics)
 
     @staticmethod
     def _cleanup_obj_artifacts(obj_path: str) -> None:

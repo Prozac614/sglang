@@ -190,6 +190,8 @@ class DiffusionServerArgs:
             self.custom_validator = "image"
         elif self.modality == "video":
             self.custom_validator = "video"
+        elif self.modality == "3d":
+            self.custom_validator = "mesh"
 
 
 @dataclass(frozen=True)
@@ -445,10 +447,9 @@ ONE_GPU_CASES_A: list[DiffusionTestCase] = [
     ),
 ]
 
-# Hunyuan3D shape generation sampling params
 HUNYUAN3D_SHAPE_sampling_params = DiffusionSamplingParams(
-    prompt="",  # Not used for I2M
-    image_path=Path(__file__).parent.parent / "test_files" / "hunyuan3d_demo.png",
+    prompt="",
+    image_path="https://raw.githubusercontent.com/sgl-project/sgl-test-files/main/diffusion-ci/consistency_gt/1-gpu/hunyuan3d_2_0/hunyuan3d.png",
 )
 
 ONE_GPU_CASES_B: list[DiffusionTestCase] = [
@@ -570,7 +571,6 @@ ONE_GPU_CASES_B: list[DiffusionTestCase] = [
         DiffusionServerArgs(
             model_path="tencent/Hunyuan3D-2",
             modality="3d",
-            custom_validator="mesh",
         ),
         HUNYUAN3D_SHAPE_sampling_params,
     ),

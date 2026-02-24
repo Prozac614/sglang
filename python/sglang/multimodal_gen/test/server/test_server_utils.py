@@ -49,6 +49,10 @@ logger = init_logger(__name__)
 
 globally_suppress_loggers()
 
+# Tracks mesh output file paths from generate_mesh for later correctness validation.
+# Keyed by case_id, cleaned up after use.
+MESH_OUTPUT_PATHS: dict[str, str] = {}
+
 
 def download_image_from_url(url: str) -> Path:
     """Download an image from a URL to a temporary file.
@@ -636,146 +640,92 @@ class VideoPerformanceValidator(PerformanceValidator):
             )
 
 
-class MeshValidator:
-    """Validator for 3D mesh generation using Chamfer Distance for geometric similarity."""
+class MeshValidator(PerformanceValidator):
+    """Validator for 3D mesh generation. Inherits perf validation from PerformanceValidator."""
 
-    # Reference mesh file path
-    REFERENCE_MESH_PATH = (
-        Path(__file__).parent.parent / "test_files" / "hunyuan3d_reference.obj"
+    pass
+
+
+HUNYUAN3D_REFERENCE_URL = (
+    "https://raw.githubusercontent.com/sgl-project/sgl-test-files/"
+    "main/diffusion-ci/consistency_gt/1-gpu/hunyuan3d_2_0/hunyuan3d.glb"
+)
+
+
+def _download_reference_mesh(url: str) -> Path:
+    """Download a reference mesh from URL, caching in temp dir."""
+    import hashlib
+
+    cache_name = f"ref_mesh_{hashlib.md5(url.encode()).hexdigest()}.glb"
+    cache_path = Path(tempfile.gettempdir()) / cache_name
+    if cache_path.exists():
+        logger.info(f"Using cached reference mesh: {cache_path}")
+        return cache_path
+
+    logger.info(f"Downloading reference mesh from: {url}")
+    with urlopen(url, timeout=60) as resp:
+        cache_path.write_bytes(resp.read())
+    logger.info(f"Reference mesh cached at: {cache_path}")
+    return cache_path
+
+
+def validate_mesh_correctness(
+    generated_mesh_path: str,
+    reference_url: str = HUNYUAN3D_REFERENCE_URL,
+    num_sample_points: int = 4096,
+    cd_threshold_ratio: float = 0.01,
+    random_seed: int = 42,
+):
+    """Validate mesh geometric similarity against a reference via Chamfer Distance.
+
+    Downloads the reference mesh from a URL (cached), samples point clouds from
+    both meshes, and asserts Chamfer Distance is within threshold.
+    """
+    import numpy as np
+
+    try:
+        import trimesh
+    except ImportError:
+        pytest.fail("trimesh is required for mesh validation: pip install trimesh")
+
+    from scipy.spatial import cKDTree
+
+    # Load generated mesh
+    generated_mesh = trimesh.load(generated_mesh_path)
+    if isinstance(generated_mesh, trimesh.Scene):
+        generated_mesh = generated_mesh.dump(concatenate=True)
+
+    # Download and load reference mesh
+    ref_path = _download_reference_mesh(reference_url)
+    reference_mesh = trimesh.load(str(ref_path))
+    if isinstance(reference_mesh, trimesh.Scene):
+        reference_mesh = reference_mesh.dump(concatenate=True)
+
+    # Bounding box diagonal for threshold normalization
+    ref_bbox = reference_mesh.bounding_box.bounds
+    bbox_diagonal = float(np.linalg.norm(ref_bbox[1] - ref_bbox[0]))
+    cd_threshold = cd_threshold_ratio * bbox_diagonal
+
+    # Sample point clouds
+    np.random.seed(random_seed)
+    gen_points = np.array(
+        generated_mesh.sample(num_sample_points, return_index=True)[0]
+    )
+    ref_points = np.array(
+        reference_mesh.sample(num_sample_points, return_index=True)[0]
     )
 
-    # Chamfer Distance configuration
-    NUM_SAMPLE_POINTS = 4096
-    CD_THRESHOLD_RATIO = 0.01  # 1% of bbox diagonal
-    RANDOM_SEED = 42
+    # Bidirectional Chamfer Distance
+    tree1 = cKDTree(gen_points)
+    tree2 = cKDTree(ref_points)
+    forward_cd = float(np.mean(tree2.query(gen_points)[0] ** 2))
+    backward_cd = float(np.mean(tree1.query(ref_points)[0] ** 2))
+    total_cd = forward_cd + backward_cd
 
-    def __init__(self, **kwargs):
-        """Initialize mesh validator. Accepts kwargs for compatibility with validator registry."""
-        pass
-
-    def _sample_point_cloud(self, mesh, num_points: int):
-        """Sample points uniformly from mesh surface.
-
-        Args:
-            mesh: Input trimesh object
-            num_points: Number of points to sample
-
-        Returns:
-            Point cloud array of shape (num_points, 3)
-        """
-        import numpy as np
-
-        points, _ = mesh.sample(num_points, return_index=True)
-        return np.array(points)
-
-    def _compute_chamfer_distance(self, points1, points2):
-        """Compute bidirectional Chamfer Distance using KD-Tree."""
-        import numpy as np
-        from scipy.spatial import cKDTree
-
-        tree1 = cKDTree(points1)
-        tree2 = cKDTree(points2)
-
-        distances1, _ = tree2.query(points1)
-        distances2, _ = tree1.query(points2)
-
-        forward_cd = float(np.mean(distances1**2))
-        backward_cd = float(np.mean(distances2**2))
-        total_cd = forward_cd + backward_cd
-
-        return forward_cd, backward_cd, total_cd
-
-    def validate(self, mesh_path: str) -> dict:
-        """Validate generated mesh against reference mesh."""
-        try:
-            import trimesh
-        except ImportError:
-            logger.error(
-                "trimesh is required for mesh validation. Install with: pip install trimesh"
-            )
-            return {"all_passed": False, "error": "trimesh not installed"}
-
-        results = {
-            "all_passed": True,
-            "checks": {},
-        }
-
-        # Load generated mesh
-        try:
-            generated_mesh = trimesh.load(mesh_path)
-            if isinstance(generated_mesh, trimesh.Scene):
-                generated_mesh = generated_mesh.dump(concatenate=True)
-        except Exception as e:
-            logger.error(f"Failed to load generated mesh: {e}")
-            results["all_passed"] = False
-            results["error"] = f"Failed to load generated mesh: {e}"
-            return results
-
-        # Load reference mesh
-        if not self.REFERENCE_MESH_PATH.exists():
-            logger.error(f"Reference mesh not found at {self.REFERENCE_MESH_PATH}")
-            results["all_passed"] = False
-            results["error"] = f"Reference mesh not found at {self.REFERENCE_MESH_PATH}"
-            return results
-
-        try:
-            reference_mesh = trimesh.load(str(self.REFERENCE_MESH_PATH))
-            if isinstance(reference_mesh, trimesh.Scene):
-                reference_mesh = reference_mesh.dump(concatenate=True)
-        except Exception as e:
-            logger.error(f"Failed to load reference mesh: {e}")
-            results["all_passed"] = False
-            results["error"] = f"Failed to load reference mesh: {e}"
-            return results
-
-        import numpy as np
-
-        # Compute bounding box diagonal for threshold normalization
-        ref_bbox = reference_mesh.bounding_box.bounds
-        bbox_diagonal = float(np.linalg.norm(ref_bbox[1] - ref_bbox[0]))
-        cd_threshold = self.CD_THRESHOLD_RATIO * bbox_diagonal
-
-        # Sample point clouds from both meshes
-        np.random.seed(self.RANDOM_SEED)
-        gen_points = self._sample_point_cloud(generated_mesh, self.NUM_SAMPLE_POINTS)
-        ref_points = self._sample_point_cloud(reference_mesh, self.NUM_SAMPLE_POINTS)
-
-        # Compute Chamfer Distance
-        forward_cd, backward_cd, total_cd = self._compute_chamfer_distance(
-            gen_points, ref_points
-        )
-
-        cd_passed = total_cd <= cd_threshold
-        results["checks"]["chamfer_distance"] = {
-            "forward_cd": forward_cd,
-            "backward_cd": backward_cd,
-            "total_cd": total_cd,
-            "threshold": cd_threshold,
-            "bbox_diagonal": bbox_diagonal,
-            "passed": cd_passed,
-        }
-        if not cd_passed:
-            results["all_passed"] = False
-            logger.warning(
-                f"Chamfer Distance check failed: total_cd={total_cd:.6f}, "
-                f"threshold={cd_threshold:.6f}"
-            )
-
-        # Print comparison summary
-        print("=" * 60)
-        print("[MeshValidator] Chamfer Distance Results:")
-        print(f"  Sample Points: {self.NUM_SAMPLE_POINTS}")
-        print(f"  BBox Diagonal: {bbox_diagonal:.4f}")
-        print(f"  Forward CD (gen->ref):  {forward_cd:.6f}")
-        print(f"  Backward CD (ref->gen): {backward_cd:.6f}")
-        print(f"  Total Chamfer Distance: {total_cd:.6f}")
-        print(
-            f"  Threshold: {cd_threshold:.6f} ({self.CD_THRESHOLD_RATIO * 100:.2f}% of bbox diagonal)"
-        )
-        print(f"  Passed: {cd_passed}")
-        print("=" * 60)
-
-        return results
+    assert total_cd <= cd_threshold, (
+        f"Chamfer Distance check failed: total_cd={total_cd:.6f}, "
+        f"threshold={cd_threshold:.6f} ({cd_threshold_ratio * 100:.2f}% of bbox diagonal {bbox_diagonal:.4f})"
+    )
 
 
 # Registry of validators by name
@@ -1222,11 +1172,15 @@ def get_generate_fn(
             pytest.skip(f"{case_id}: no input image configured for mesh generation")
 
         image_path = sampling_params.image_path
-        if isinstance(image_path, Path):
-            image_path = str(image_path)
-
-        if not Path(image_path).exists():
-            pytest.skip(f"{case_id}: image file missing: {image_path}")
+        if isinstance(image_path, str) and is_image_url(image_path):
+            image_path = download_image_from_url(image_path)
+        elif isinstance(image_path, Path):
+            if not image_path.exists():
+                pytest.skip(f"{case_id}: image file missing: {image_path}")
+        else:
+            image_path = Path(str(image_path))
+            if not image_path.exists():
+                pytest.skip(f"{case_id}: image file missing: {image_path}")
 
         base_url = str(client.base_url).rstrip("/")
         if base_url.endswith("/v1"):
@@ -1234,8 +1188,8 @@ def get_generate_fn(
 
         create_url = f"{base_url}/v1/meshes"
 
-        with open(image_path, "rb") as img_file:
-            files = {"image": (Path(image_path).name, img_file, "image/png")}
+        with open(str(image_path), "rb") as img_file:
+            files = {"image": (Path(str(image_path)).name, img_file, "image/png")}
             data = {
                 "prompt": "generate 3d mesh",
                 "model": model_path,
@@ -1263,13 +1217,11 @@ def get_generate_fn(
 
         poll_url = f"{base_url}/v1/meshes/{mesh_id}"
         poll_interval = 5
-        max_wait = 6000
+        max_wait = 1200
         elapsed = 0
 
         while elapsed < max_wait:
-            import time as _time
-
-            _time.sleep(poll_interval)
+            time.sleep(poll_interval)
             elapsed += poll_interval
 
             try:
@@ -1285,13 +1237,21 @@ def get_generate_fn(
             status = status_data.get("status", "")
 
             if status == "completed":
-                mesh_path = status_data.get("file_path")
-                if not mesh_path:
-                    pytest.fail(f"{case_id}: completed but no file_path: {status_data}")
-                if not Path(mesh_path).exists():
-                    pytest.fail(f"{case_id}: mesh file not found at {mesh_path}")
-                logger.info(f"[Mesh Gen] Mesh generated successfully at {mesh_path}")
-                return str(mesh_path)
+                content_url = f"{base_url}/v1/meshes/{mesh_id}/content"
+                try:
+                    content_resp = http_requests.get(content_url, timeout=60)
+                except Exception as e:
+                    pytest.fail(f"{case_id}: mesh download failed: {e}")
+
+                if content_resp.status_code != 200:
+                    pytest.fail(f"{case_id}: mesh download failed: {content_resp.text}")
+
+                temp_path = Path(tempfile.gettempdir()) / f"mesh_test_{mesh_id}.glb"
+                temp_path.write_bytes(content_resp.content)
+                MESH_OUTPUT_PATHS[case_id] = str(temp_path)
+
+                logger.info(f"[Mesh Gen] Mesh downloaded to {temp_path}")
+                return mesh_id
             elif status == "failed":
                 error = status_data.get("error", {})
                 pytest.fail(f"{case_id}: mesh generation failed: {error}")
