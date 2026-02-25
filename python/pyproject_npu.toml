@@ -79,7 +79,7 @@ diffusion = [
     "remote-pdb",
     "cache-dit==1.2.1",
     "addict",
-    "scikit-image==0.26.0",
+    "scikit-image==0.25.2",
     "trimesh>=4.0.0",
     "xatlas",
 ]

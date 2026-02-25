@@ -114,7 +114,7 @@ diffusion = [
   "runai_model_streamer>=0.15.5",
   "cache-dit==1.2.0",
   "addict",
-  "scikit-image==0.26.0",
+  "scikit-image==0.25.2",
   "trimesh>=4.0.0",
   "xatlas",
 ]
