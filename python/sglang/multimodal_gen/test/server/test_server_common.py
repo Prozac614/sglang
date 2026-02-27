@@ -98,6 +98,10 @@ def diffusion_server(case: DiffusionTestCase) -> ServerContext:
     if server_args.enable_cache_dit:
         env_vars["SGLANG_CACHE_DIT_ENABLED"] = "true"
 
+    # 3D mesh models need sufficient denoising steps for valid SDF generation
+    if server_args.modality == "3d":
+        env_vars["SGLANG_TEST_NUM_INFERENCE_STEPS"] = "50"
+
     # start server
     manager = ServerManager(
         model=server_args.model_path,
