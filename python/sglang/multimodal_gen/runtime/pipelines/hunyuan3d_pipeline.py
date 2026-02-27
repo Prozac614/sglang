@@ -151,6 +151,37 @@ class Hunyuan3D2Pipeline(ComposedPipelineBase):
         return config_path, ckpt_path
 
     @staticmethod
+    def _resolve_paint_dir(model_path: str, subfolder: str) -> str:
+        """Locate (or download) the paint subfolder and return its local path."""
+        local_path = os.path.join(model_path, subfolder)
+        if not os.path.exists(local_path):
+            local_path = os.path.expanduser(local_path)
+
+        if not os.path.exists(local_path):
+            logger.info(
+                "Local path %s not found, downloading from HuggingFace Hub",
+                local_path,
+            )
+            from huggingface_hub import snapshot_download
+
+            downloaded = snapshot_download(
+                repo_id=model_path,
+                allow_patterns=[f"{subfolder}/*"],
+            )
+            local_path = os.path.join(downloaded, subfolder)
+
+        for subdir in ("vae", "unet"):
+            config_file = os.path.join(local_path, subdir, "config.json")
+            if not os.path.exists(config_file):
+                raise FileNotFoundError(
+                    f"Paint model incomplete: {config_file} not found. "
+                    "Download the model or check network connectivity."
+                )
+
+        logger.info("Resolved paint model directory: %s", local_path)
+        return local_path
+
+    @staticmethod
     def _load_and_split_checkpoint(
         ckpt_path: str, use_safetensors: bool
     ) -> dict[str, dict[str, torch.Tensor]]:
@@ -302,6 +333,16 @@ class Hunyuan3D2Pipeline(ComposedPipelineBase):
         )
 
         logger.info("All Hunyuan3D shape components loaded successfully")
+
+        if config.paint_enable:
+            try:
+                paint_dir = self._resolve_paint_dir(
+                    server_args.model_path, config.paint_subfolder
+                )
+                components["hy3dpaint_dir"] = paint_dir
+            except Exception as e:
+                logger.warning("Failed to resolve paint model path: %s", e)
+
         return components
 
     # Pipeline lifecycle
@@ -356,7 +397,10 @@ class Hunyuan3D2Pipeline(ComposedPipelineBase):
             )
             self.add_stage(
                 stage_name="paint_texgen",
-                stage=Hunyuan3DPaintTexGenStage(config=config),
+                stage=Hunyuan3DPaintTexGenStage(
+                    config=config,
+                    paint_dir=self.get_module("hy3dpaint_dir"),
+                ),
             )
             self.add_stage(
                 stage_name="paint_postprocess",

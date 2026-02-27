@@ -284,21 +284,19 @@ class Hunyuan3DPaintPreprocessStage(PipelineStage):
             self.config, "delight_subfolder", "hunyuan3d-delight-v2-0"
         )
 
-        base_dir = os.environ.get("HY3DGEN_MODELS", "~/.cache/hy3dgen")
-        local_path = os.path.expanduser(
-            os.path.join(base_dir, model_path, delight_subfolder)
-        )
+        local_path = os.path.join(model_path, delight_subfolder)
+        if not os.path.exists(local_path):
+            local_path = os.path.expanduser(local_path)
 
         if not os.path.exists(local_path):
             try:
-                path = snapshot_download(
+                downloaded = snapshot_download(
                     repo_id=model_path,
                     allow_patterns=[f"{delight_subfolder}/*"],
-                    local_dir=os.path.expanduser(os.path.join(base_dir, model_path)),
                 )
-                local_path = os.path.join(path, delight_subfolder)
+                local_path = os.path.join(downloaded, delight_subfolder)
             except Exception as e:
-                logger.warning(f"Could not download delight model: {e}")
+                logger.warning("Could not download delight model: %s", e)
                 local_path = None
 
         if local_path and os.path.exists(local_path):
@@ -489,6 +487,7 @@ class Hunyuan3DPaintTexGenStage(PipelineStage):
     def __init__(
         self,
         config: Hunyuan3D2PipelineConfig,
+        paint_dir: str | None = None,
         transformer: Any = None,
         scheduler: Any = None,
         vae: Any = None,
@@ -499,6 +498,7 @@ class Hunyuan3DPaintTexGenStage(PipelineStage):
     ) -> None:
         super().__init__()
         self.config = config
+        self.paint_dir = paint_dir
         self.transformer = transformer
         self.scheduler = scheduler
         self.vae = vae
@@ -513,102 +513,83 @@ class Hunyuan3DPaintTexGenStage(PipelineStage):
         return StageParallelismType.MAIN_RANK_ONLY
 
     def _load_paint_models(self, server_args: ServerArgs) -> None:
+        """Load paint models from pre-resolved local path (no network)."""
         if self._loaded:
             return
-
-        from huggingface_hub import snapshot_download
-
-        model_path = server_args.model_path
-        paint_subfolder = getattr(
-            self.config, "paint_subfolder", "hunyuan3d-paint-v2-0"
-        )
-
-        base_dir = os.environ.get("HY3DGEN_MODELS", "~/.cache/hy3dgen")
-        local_path = os.path.expanduser(
-            os.path.join(base_dir, model_path, paint_subfolder)
-        )
-
-        if not os.path.exists(local_path):
-            try:
-                logger.info(
-                    f"Downloading paint model from {model_path}/{paint_subfolder}..."
-                )
-                path = snapshot_download(
-                    repo_id=model_path,
-                    allow_patterns=[f"{paint_subfolder}/*"],
-                    local_dir=os.path.expanduser(os.path.join(base_dir, model_path)),
-                )
-                local_path = os.path.join(path, paint_subfolder)
-            except Exception as e:
-                logger.warning(f"Could not download paint model: {e}")
-                self._loaded = True
-                return
-
+        if self.paint_dir is None:
+            logger.warning("No paint model directory resolved, skipping")
+            self._loaded = True
+            return
         try:
-            from diffusers import AutoencoderKL, LCMScheduler
-            from diffusers.image_processor import VaeImageProcessor
-
-            from sglang.multimodal_gen.runtime.models.dits.hunyuan3d import (
-                UNet2p5DConditionModel,
-            )
-
-            logger.info(f"Loading paint model from {local_path}")
-
-            self.vae = AutoencoderKL.from_pretrained(
-                os.path.join(local_path, "vae"),
-                torch_dtype=torch.float16,
-            ).to(self.device)
-
-            self.transformer = UNet2p5DConditionModel.from_pretrained(
-                os.path.join(local_path, "unet"),
-                torch_dtype=torch.float16,
-            ).to(self.device)
-
-            self.is_turbo = bool(getattr(self.config, "paint_turbo_mode", False))
-
-            scheduler_path = os.path.join(local_path, "scheduler")
-            if self.is_turbo:
-                self.scheduler = LCMScheduler.from_pretrained(scheduler_path)
-            else:
-                from diffusers import EulerAncestralDiscreteScheduler
-
-                self.scheduler = EulerAncestralDiscreteScheduler.from_pretrained(
-                    scheduler_path
-                )
-                self.scheduler = EulerAncestralDiscreteScheduler.from_config(
-                    self.scheduler.config,
-                    timestep_spacing="trailing",
-                )
-
-            self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
-            self.image_processor = VaeImageProcessor(
-                vae_scale_factor=self.vae_scale_factor
-            )
-
-            self.solver = DDIMSolver(
-                self.scheduler.alphas_cumprod.cpu().numpy(),
-                timesteps=self.scheduler.config.num_train_timesteps,
-                ddim_timesteps=30,
-            ).to(self.device)
-
-            if server_args.enable_torch_compile:
-                compile_mode = os.environ.get(
-                    "SGLANG_TORCH_COMPILE_MODE", "max-autotune-no-cudagraphs"
-                )
-                logger.info("Compiling paint transformer with mode: %s", compile_mode)
-                self.transformer.compile(
-                    mode=compile_mode, fullgraph=False, dynamic=None
-                )
-
+            self._do_load_paint(server_args)
             logger.info("Paint pipeline loaded successfully")
-
         except Exception as e:
-            logger.warning(f"Failed to load paint pipeline: {e}")
+            logger.warning("Failed to load paint pipeline: %s", e)
             self.vae = None
             self.transformer = None
             self.scheduler = None
-
         self._loaded = True
+
+    def _do_load_paint(self, server_args: ServerArgs) -> None:
+        import json
+
+        from diffusers import AutoencoderKL
+        from diffusers.image_processor import VaeImageProcessor
+
+        from sglang.multimodal_gen.runtime.models.dits.hunyuan3d import (
+            UNet2p5DConditionModel,
+        )
+
+        local_path = self.paint_dir
+        logger.info("Loading paint model from %s", local_path)
+        vae_dir = os.path.join(local_path, "vae")
+        with open(os.path.join(vae_dir, "config.json"), "r") as f:
+            vae_config = json.load(f)
+        vae_config = {k: v for k, v in vae_config.items() if not k.startswith("_")}
+        self.vae = AutoencoderKL(**vae_config)
+        st_path = os.path.join(vae_dir, "diffusion_pytorch_model.safetensors")
+        bin_path = os.path.join(vae_dir, "diffusion_pytorch_model.bin")
+        if os.path.exists(st_path):
+            from safetensors.torch import load_file
+
+            state_dict = load_file(st_path)
+        elif os.path.exists(bin_path):
+            state_dict = torch.load(bin_path, map_location="cpu", weights_only=True)
+        else:
+            raise FileNotFoundError(f"No VAE weights in {vae_dir}")
+        self.vae.load_state_dict(state_dict)
+        self.vae = self.vae.to(device=self.device, dtype=torch.float16).eval()
+        self.transformer = UNet2p5DConditionModel.from_pretrained(
+            os.path.join(local_path, "unet"),
+            torch_dtype=torch.float16,
+        ).to(self.device)
+        self.is_turbo = bool(getattr(self.config, "paint_turbo_mode", False))
+        sched_path = os.path.join(local_path, "scheduler", "scheduler_config.json")
+        with open(sched_path, "r") as f:
+            sched_cfg = json.load(f)
+        if self.is_turbo:
+            from diffusers import LCMScheduler
+
+            self.scheduler = LCMScheduler.from_config(sched_cfg)
+        else:
+            from diffusers import EulerAncestralDiscreteScheduler
+
+            self.scheduler = EulerAncestralDiscreteScheduler.from_config(
+                sched_cfg, timestep_spacing="trailing"
+            )
+        self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
+        self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor)
+        self.solver = DDIMSolver(
+            self.scheduler.alphas_cumprod.cpu().numpy(),
+            timesteps=self.scheduler.config.num_train_timesteps,
+            ddim_timesteps=30,
+        ).to(self.device)
+        if server_args.enable_torch_compile:
+            compile_mode = os.environ.get(
+                "SGLANG_TORCH_COMPILE_MODE", "max-autotune-no-cudagraphs"
+            )
+            logger.info("Compiling paint transformer with mode: %s", compile_mode)
+            self.transformer.compile(mode=compile_mode, fullgraph=False, dynamic=None)
 
     def _convert_pil_list_to_tensor(
         self, images: list, device: torch.device
