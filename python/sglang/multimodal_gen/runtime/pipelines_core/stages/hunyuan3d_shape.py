@@ -484,11 +484,13 @@ class Hunyuan3DShapeSaveStage(PipelineStage):
         if mesh is None:
             if batch.is_warmup:
                 logger.info(
-                    "Skipping mesh export during warmup (surface extraction returned None)"
+                    "Skipping mesh export during warmup "
+                    "(surface extraction returned None)"
                 )
+                batch.extra["_mesh_failed"] = True
                 if self.config.paint_enable:
                     return batch
-                return OutputBatch(output_file_paths=[], timings=batch.timings)
+                return OutputBatch(output_file_paths=[], metrics=batch.metrics)
             raise RuntimeError(
                 "Mesh generation failed: surface extraction returned None. "
                 "The surface level may be outside the volume data range."

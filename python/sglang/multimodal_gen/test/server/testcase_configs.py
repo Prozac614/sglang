@@ -576,18 +576,21 @@ ONE_GPU_CASES_B: list[DiffusionTestCase] = [
         ),
         TI2V_sampling_params,
     ),
-    # === Image to Mesh (I2M) ===
-    DiffusionTestCase(
-        "hunyuan3d_shape_gen",
-        DiffusionServerArgs(
-            model_path="tencent/Hunyuan3D-2",
-            modality="3d",
-        ),
-        HUNYUAN3D_SHAPE_sampling_params,
-    ),
 ]
 
-# Skip turbowan because Triton requires 81920 shared memory, but AMD only has 65536.
+# Skip hunyuan3d on AMD: marching_cubes surface extraction produces invalid SDF on ROCm.
+if not current_platform.is_hip():
+    ONE_GPU_CASES_B.append(
+        DiffusionTestCase(
+            "hunyuan3d_shape_gen",
+            DiffusionServerArgs(
+                model_path="tencent/Hunyuan3D-2",
+                modality="3d",
+            ),
+            HUNYUAN3D_SHAPE_sampling_params,
+        ),
+    )
+# Skip turbowan on AMD: Triton requires 81920 shared memory, but AMD only has 65536.
 if not current_platform.is_hip():
     ONE_GPU_CASES_B.append(
         DiffusionTestCase(

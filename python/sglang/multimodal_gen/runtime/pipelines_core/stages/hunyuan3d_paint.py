@@ -424,6 +424,18 @@ class Hunyuan3DPaintPreprocessStage(PipelineStage):
     # --- Forward ---
 
     def forward(self, batch: Req, server_args: ServerArgs) -> Req:
+        if batch.extra.get("_mesh_failed"):
+            logger.warning("Mesh generation failed, skipping paint preprocessing")
+            batch.extra["paint_mesh"] = None
+            batch.extra["delighted_image"] = None
+            batch.extra["normal_maps"] = []
+            batch.extra["position_maps"] = []
+            batch.extra["camera_azims"] = self.CAMERA_AZIMS
+            batch.extra["camera_elevs"] = self.CAMERA_ELEVS
+            batch.extra["view_weights"] = self.VIEW_WEIGHTS
+            batch.extra["renderer"] = None
+            return batch
+
         import concurrent.futures
         import copy
 
@@ -896,6 +908,11 @@ class Hunyuan3DPaintTexGenStage(PipelineStage):
         return self.image_processor.postprocess(image, output_type="pil")
 
     def forward(self, batch: Req, server_args: ServerArgs) -> Req:
+        if batch.extra.get("_mesh_failed"):
+            logger.warning("Mesh generation failed, skipping paint texgen")
+            batch.extra["multiview_textures"] = []
+            return batch
+
         self._load_paint_models(server_args)
 
         delighted_image = batch.extra["delighted_image"]
@@ -948,6 +965,8 @@ class Hunyuan3DPaintTexGenStage(PipelineStage):
         return batch
 
     def verify_input(self, batch: Req, server_args: ServerArgs) -> VerificationResult:
+        if batch.extra.get("_mesh_failed"):
+            return VerificationResult()
         result = VerificationResult()
         result.add_check(
             "delighted_image", batch.extra.get("delighted_image"), V.not_none
@@ -979,6 +998,10 @@ class Hunyuan3DPaintPostprocessStage(PipelineStage):
         self.config = config
 
     def forward(self, batch: Req, server_args: ServerArgs) -> OutputBatch:
+        if batch.extra.get("_mesh_failed"):
+            logger.warning("Mesh generation failed, skipping paint postprocess")
+            return OutputBatch(output_file_paths=[], metrics=batch.metrics)
+
         renderer = batch.extra["renderer"]
         multiview_textures = batch.extra["multiview_textures"]
         camera_elevs = batch.extra["camera_elevs"]
@@ -1042,6 +1065,8 @@ class Hunyuan3DPaintPostprocessStage(PipelineStage):
                 pass
 
     def verify_input(self, batch: Req, server_args: ServerArgs) -> VerificationResult:
+        if batch.extra.get("_mesh_failed"):
+            return VerificationResult()
         result = VerificationResult()
         result.add_check("renderer", batch.extra.get("renderer"), V.not_none)
         result.add_check(
