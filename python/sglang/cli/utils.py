@@ -4,7 +4,6 @@ import os
 import subprocess
 from functools import lru_cache
 
-from sglang.multimodal_gen.registry import is_known_non_diffusers_multimodal_model
 from sglang.srt.environ import envs
 
 logger = logging.getLogger(__name__)
@@ -30,6 +29,13 @@ def get_is_diffusion_model(model_path: str) -> bool:
     Returns False on any failure (network error, 404, offline mode, etc.)
     so that the caller falls through to the standard LLM server path.
     """
+    try:
+        from sglang.multimodal_gen.registry import (
+            is_known_non_diffusers_multimodal_model,
+        )
+    except ImportError:
+        is_known_non_diffusers_multimodal_model = lambda _: False
+
     if os.path.isdir(model_path):
         if _is_diffusers_model_dir(model_path):
             return True
