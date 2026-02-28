@@ -1188,7 +1188,7 @@ def get_generate_fn(
                 },
             )
 
-    def generate_mesh(case_id, client) -> str:
+    def generate_mesh(case_id, client) -> tuple[str, bytes]:
         """I2M: Image to Mesh generation using async /v1/meshes API."""
         import requests as http_requests
 
@@ -1275,7 +1275,7 @@ def get_generate_fn(
                 MESH_OUTPUT_PATHS[case_id] = str(temp_path)
 
                 logger.info(f"[Mesh Gen] Mesh downloaded to {temp_path}")
-                return mesh_id
+                return (mesh_id, b"")
             elif status == "failed":
                 error = status_data.get("error", {})
                 pytest.fail(f"{case_id}: mesh generation failed: {error}")
