@@ -34,10 +34,7 @@ from sglang.multimodal_gen.runtime.models.encoders.base import ImageEncoder, Tex
 from sglang.multimodal_gen.runtime.models.encoders.vision import (
     resolve_visual_encoder_outputs,
 )
-from sglang.multimodal_gen.runtime.platforms import (
-    AttentionBackendEnum,
-    current_platform,
-)
+from sglang.multimodal_gen.runtime.platforms import AttentionBackendEnum
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
 
 logger = init_logger(__name__)
@@ -231,47 +228,40 @@ class CLIPAttention(nn.Module):
             key_states = key_states.transpose(1, 2)
             value_states = value_states.transpose(1, 2)
 
-            if (
-                current_platform.is_rocm()
-                or current_platform.is_musa()
-                or current_platform.is_xpu()
-            ):
-                # ROCm: Using both is_causal=True and attn_mask causes NaN.
-                # Use is_causal=True alone (padding mask not needed for CLIP
-                # since pooler_output comes from EOS token before padding).
-                # XXX (MUSA): Torch SDPA on MUSA currently does not support
-                # using both `attn_mask` and `is_causal=True` simultaneously.
-                attn_output = torch.nn.functional.scaled_dot_product_attention(
-                    query_states,
-                    key_states,
-                    value_states,
-                    attn_mask=None,
-                    is_causal=True,
-                    scale=self.scale,
-                )
-            else:
-                if attention_mask is not None:
-                    # SDPA requires [B, 1, 1, S] or [B, S, S] format mask
-                    if attention_mask.dim() == 2:
-                        attn_mask = attention_mask[:, None, None, :].to(
-                            dtype=query_states.dtype
-                        )
-                        attn_mask = (1.0 - attn_mask) * torch.finfo(
-                            query_states.dtype
-                        ).min
-                    else:
-                        attn_mask = attention_mask
-                else:
-                    attn_mask = None
+            # CLIP text is always causal. Build a single additive mask that
+            # combines causal + padding so SDPA can run with is_causal=False on
+            # every platform (passing both attn_mask and is_causal=True triggers
+            # NaNs on ROCm and is unsupported on MUSA).
+            seq_len = query_states.shape[-2]
+            min_val = torch.finfo(query_states.dtype).min
+            causal_mask = torch.triu(
+                torch.full(
+                    (seq_len, seq_len),
+                    min_val,
+                    dtype=query_states.dtype,
+                    device=query_states.device,
+                ),
+                diagonal=1,
+            )
+            attn_mask = causal_mask[None, None, :, :]
 
-                attn_output = torch.nn.functional.scaled_dot_product_attention(
-                    query_states,
-                    key_states,
-                    value_states,
-                    attn_mask=attn_mask,
-                    is_causal=attention_mask is None,
-                    scale=self.scale,
-                )
+            if attention_mask is not None:
+                if attention_mask.dim() == 2:
+                    pad_mask = (1.0 - attention_mask.to(dtype=query_states.dtype))[
+                        :, None, None, :
+                    ] * min_val
+                else:
+                    pad_mask = attention_mask.to(dtype=query_states.dtype)
+                attn_mask = attn_mask + pad_mask
+
+            attn_output = torch.nn.functional.scaled_dot_product_attention(
+                query_states,
+                key_states,
+                value_states,
+                attn_mask=attn_mask,
+                is_causal=False,
+                scale=self.scale,
+            )
             attn_output = attn_output.transpose(1, 2)
         else:
             # Use LocalAttention (doesn't support attention_mask, but maintains compatibility)

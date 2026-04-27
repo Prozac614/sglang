@@ -58,11 +58,7 @@ CASE_THRESHOLDS: Dict[str, Dict[ComponentType, float]] = {
 # Active skip policy. Keep this limited to cases with current, concrete evidence
 # of real divergence or unsupported reference loading in the harness.
 SKIP_COMPONENTS: Dict[str, Dict[ComponentType, ComponentSkip]] = {
-    "flux_image_t2i": {
-        ComponentType.TEXT_ENCODER: ComponentSkip(
-            "Text encoder diverges from HF baseline despite 100% matched weights (CosSim ~0.47)"
-        )
-    },
+    "flux_image_t2i": {},
     "sana_image_t2i": {
         ComponentType.VAE: ComponentSkip(
             "HF AutoencoderDC checkpoint leaves required to_qkv_multiscale weights missing, so VAE transfer would compare against partially initialized reference weights"
@@ -308,11 +304,7 @@ SKIP_COMPONENTS: Dict[str, Dict[ComponentType, ComponentSkip]] = {
             "Text encoder diverges from HF baseline in 2-GPU accuracy run (CosSim ~0.31) after 100% matched weight transfer"
         ),
     },
-    "flux_image_t2i_2_gpus": {
-        ComponentType.TEXT_ENCODER: ComponentSkip(
-            "Text encoder diverges from HF baseline in 2-GPU accuracy run (CosSim ~0.47) after 100% matched weight transfer"
-        )
-    },
+    "flux_image_t2i_2_gpus": {},
     "zimage_image_t2i_2_gpus_non_square": {
         ComponentType.VAE: ComponentSkip(
             "Representative VAE accuracy is already covered by zimage_image_t2i_2_gpus for the same source component and topology"
